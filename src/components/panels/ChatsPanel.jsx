@@ -114,7 +114,16 @@ function ChatListItem({ chat, user, active, isBlocked, onClick }) {
   );
 }
 
-export default function ChatsPanel({ user, activeChat, setActiveChat, isAddingContact, setIsAddingContact, onChatStateChange, showToast }) {
+export default function ChatsPanel({
+  user,
+  activeChat,
+  setActiveChat,
+  onChatSelect,
+  isAddingContact,
+  setIsAddingContact,
+  onChatStateChange,
+  showToast
+}) {
   const [chats, setChats] = useState([]);
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
@@ -610,7 +619,7 @@ export default function ChatsPanel({ user, activeChat, setActiveChat, isAddingCo
                 user={user}
                 active={activeChat?.qc === chat.qc}
                 isBlocked={account?.blocked?.includes(chat.qc)}
-                onClick={() => setActiveChat(chat)}
+                onClick={() => onChatSelect(chat)}
               />
             ))
           )}

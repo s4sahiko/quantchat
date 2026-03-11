@@ -305,7 +305,8 @@ export default function App() {
                   <ChatsPanel
                     user={user}
                     activeChat={activeChat}
-                    setActiveChat={handleChatSelection}
+                    setActiveChat={setActiveChat}
+                    onChatSelect={handleChatSelection}
                     isAddingContact={isAddingContact}
                     setIsAddingContact={toggleAddingContact}
                     onChatStateChange={setIsChatOpen}
