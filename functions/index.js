@@ -2,7 +2,7 @@ const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 admin.initializeApp();
 
-const db = admin.firestore();
+const admin.firestore("ai-studio-c6dc4d45-0b54-40b7-9703-bac80cd29c3f");
 
 // 1. issueQuantCNumber (HTTPS callable)
 exports.issueQuantCNumber = functions.https.onCall(async (data, context) => {

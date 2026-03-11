@@ -9,14 +9,17 @@ const firebaseConfig = {
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  // measurementId is optional, so we'll leave it out unless you want to add it
 };
 
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
 
-// If you have a specific database ID in Vercel, it uses it; otherwise, it uses (default)
-const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
-export const db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+/** * SYSTEM UPDATE: Using explicit database ID found in Firebase Console
+ * This resolves the "Database (default) not found" error.
+ */
+const DATABASE_ID = "ai-studio-c6dc4d45-0b54-40b7-9703-bac80cd29c3f";
 
+export const db = getFirestore(app, DATABASE_ID);
 export const rtdb = getDatabase(app);
+
 export default app;
