@@ -1,0 +1,73 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #050a0e;
+  --color-bg2: #0a1520;
+  --color-bg3: #0f1f30;
+  --color-border: #1a3a5c;
+  --color-cyan: #00d4ff;
+  --color-green: #00ff9d;
+  --color-red: #ff3366;
+  --color-yellow: #ffd700;
+  --color-text: #c8e6f5;
+  --color-muted: #6a9bbf;
+
+  --font-display: "Orbitron", monospace;
+  --font-mono: "Share Tech Mono", monospace;
+  --font-body: "Rajdhani", sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-bg text-text font-body overflow-hidden;
+    background-image: linear-gradient(to right, rgba(0, 212, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-display uppercase tracking-wider;
+  }
+
+  button {
+    @apply cursor-pointer transition-all duration-200;
+  }
+
+  input,
+  textarea {
+    @apply bg-bg2 border border-border text-text font-mono focus:border-cyan focus:outline-none focus:ring-1 focus:ring-cyan/50 p-2;
+  }
+}
+
+.scanline-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: repeating-linear-gradient(0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 212, 255, 0.01) 2px,
+      rgba(0, 212, 255, 0.01) 4px);
+  pointer-events: none;
+  z-index: 100;
+}
+
+.glow-text {
+  text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
+}
+
+.glow-border {
+  box-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
+}
+
+.glow-border:hover {
+  box-shadow: 0 0 15px rgba(0, 212, 255, 0.6);
+}

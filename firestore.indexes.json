@@ -1,0 +1,12 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "msgs",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "autoDeleteAt", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

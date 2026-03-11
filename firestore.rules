@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper to check if it's a demo account being seeded
+    function isDemoAccount(qc) {
+      return qc == 'QC-4829301756' || qc == 'QC-9173625840';
+    }
+
+    // Accounts
+    match /accounts/{qcNumber} {
+      allow read: if true; 
+      allow create: if request.resource.data.keys().hasAll(['qc','keyHash','ptype','pvalHash']);
+      allow update: if true;
+      allow delete: if false; 
+    }
+
+    // Active numbers
+    match /active_numbers/{qcNumber} {
+      allow read: if true;
+      // Allow client-side seeding for demo accounts
+      allow write: if isDemoAccount(qcNumber);
+    }
+
+    // Burned numbers
+    match /burned_numbers/{qcNumber} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Messages
+    match /messages/{chatId}/msgs/{msgId} {
+      allow read, write: if true; 
+    }
+
+    // Statuses
+    match /statuses/{statusId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
+      allow delete: if false;
+    }
+
+    // Erasure log
+    match /erasure_log/{logId} {
+      allow read: if false;
+      allow write: if false;
+    }
+    
+    // Chat requests
+    match /chat_requests/{requestId} {
+      allow read, write: if true;
+    }
+
+    // Contacts
+    match /accounts/{qcNumber}/contacts/{contactQc} {
+      allow read, write: if true;
+    }
+  }
+}
+
