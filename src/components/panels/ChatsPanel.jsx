@@ -38,6 +38,7 @@ import {
   Edit3
 } from 'lucide-react';
 import EmojiPicker from '../shared/EmojiPicker';
+import QuantKeyboard from '../shared/QuantKeyboard';
 
 function ChatListItem({ chat, user, active, isBlocked, onClick }) {
   const [unreadCount, setUnreadCount] = useState(0);
@@ -128,6 +129,7 @@ export default function ChatsPanel({ user }) {
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [showNicknameModal, setShowNicknameModal] = useState(false);
   const [nicknameInput, setNicknameInput] = useState('');
+  const [showQuantKeyboard, setShowQuantKeyboard] = useState(false);
 
   const scrollRef = useRef();
 
@@ -285,12 +287,21 @@ export default function ChatsPanel({ user }) {
     }
   }, [messages]);
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    if (!inputText.trim() || !activeChat || !chatId) return;
+  // Auto-scroll when keyboard opens/closes for WhatsApp feel
+  useEffect(() => {
+    if (showQuantKeyboard && scrollRef.current) {
+      setTimeout(() => {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }, 300); // Wait for transition
+    }
+  }, [showQuantKeyboard]);
 
-    const text = inputText;
-    setInputText('');
+  const handleSendMessage = async (e, directText) => {
+    if (e) e.preventDefault();
+    const text = directText || inputText;
+    if (!text.trim() || !activeChat || !chatId) return;
+
+    if (!directText) setInputText('');
 
     const chatSeed = `CHAT_SEED_${chatId}`;
     const encrypted = await encryptMessage(text, chatSeed);
@@ -615,7 +626,11 @@ export default function ChatsPanel({ user }) {
             </header>
 
             {/* Messages */}
-            <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 custom-scrollbar">
+            <div
+              ref={scrollRef}
+              onClick={() => setShowQuantKeyboard(false)}
+              className={`flex-1 overflow-y-auto p-4 md:p-6 space-y-4 custom-scrollbar transition-all duration-300 ${showQuantKeyboard ? 'pb-[280px] md:pb-6' : ''}`}
+            >
               {messages.map((msg) => (
                 <div key={msg.id} className={`flex ${msg.from === user.qc ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[85%] sm:max-w-[80%] p-3 rounded-lg border ${msg.from === user.qc
@@ -662,8 +677,14 @@ export default function ChatsPanel({ user }) {
                   onChange={handleTyping}
                   disabled={account?.blocked?.includes(activeChat.qc)}
                   placeholder={account?.blocked?.includes(activeChat.qc) ? "USER BLOCKED - TRANSMISSION DISABLED" : "ENCRYPTED SIGNAL..."}
-                  className="flex-1 bg-bg border border-border px-3 md:px-4 py-2 text-xs md:text-sm font-mono focus:border-cyan outline-none transition-all disabled:opacity-30"
+                  className="flex-1 bg-bg border border-border px-3 md:px-4 py-2 text-xs md:text-sm font-mono focus:border-cyan outline-none transition-all disabled:opacity-30 hidden md:block"
                 />
+                <div
+                  onClick={() => !account?.blocked?.includes(activeChat.qc) && setShowQuantKeyboard(true)}
+                  className={`flex-1 bg-bg border border-border px-4 py-2 text-xs font-mono transition-all md:hidden cursor-text rounded-2xl ${account?.blocked?.includes(activeChat.qc) ? 'opacity-30' : 'opacity-100'}`}
+                >
+                  {inputText || (account?.blocked?.includes(activeChat.qc) ? "USER BLOCKED" : "Secure message...")}
+                </div>
                 <button
                   type="submit"
                   disabled={!inputText.trim() || account?.blocked?.includes(activeChat.qc)}
@@ -771,6 +792,17 @@ export default function ChatsPanel({ user }) {
               </form>
             </div>
           </div>
+        )}
+        {/* Quant Keyboard for Mobile */}
+        {showQuantKeyboard && (
+          <QuantKeyboard
+            onSend={(val) => {
+              handleSendMessage(null, val);
+              setInputText('');
+            }}
+            onClose={() => setShowQuantKeyboard(false)}
+            initialValue={inputText}
+          />
         )}
       </div>
     </div>
