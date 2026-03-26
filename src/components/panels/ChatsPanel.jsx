@@ -38,9 +38,80 @@ import {
   User as UserIcon,
   ShieldOff,
   Edit3,
-  Loader2
+  Loader2,
+  Reply,
+  X
 } from 'lucide-react';
+import { motion, AnimatePresence, useMotionValue, useTransform, animate } from 'motion/react';
 import EmojiPicker from '../shared/EmojiPicker';
+
+function MessageBubble({ msg, user, onReply }) {
+  const isMe = msg.from === user.qc;
+  const dragX = useMotionValue(0);
+  
+  // Swipe right for others (x > 0), swipe left for me (x < 0)
+  const iconOpacity = useTransform(dragX, isMe ? [0, -60] : [0, 60], [0, 1]);
+  const iconScale = useTransform(dragX, isMe ? [0, -60] : [0, 60], [0.5, 1]);
+
+  return (
+    <div className={`flex ${isMe ? 'justify-end' : 'justify-start'} relative overflow-visible py-1 px-2`}>
+      <motion.div 
+        style={{ opacity: iconOpacity, scale: iconScale }}
+        className={`absolute inset-y-0 ${isMe ? 'right-0 justify-end' : 'left-0 justify-start'} flex items-center px-4 pointer-events-none z-0`}
+      >
+        <div className="bg-cyan/20 p-2 rounded-full">
+          <Reply size={18} className="text-cyan" />
+        </div>
+      </motion.div>
+      
+      <motion.div
+        drag="x"
+        style={{ x: dragX }}
+        dragConstraints={isMe ? { left: -100, right: 0 } : { left: 0, right: 100 }}
+        dragElastic={0.2}
+        onDragEnd={(e, info) => {
+          const threshold = isMe ? -60 : 60;
+          const triggered = isMe ? info.offset.x < threshold : info.offset.x > threshold;
+          if (triggered) {
+            onReply(msg);
+          }
+          animate(dragX, 0, { type: 'spring', stiffness: 500, damping: 40 });
+        }}
+        className={`max-w-[85%] p-2 rounded-lg border relative z-10 cursor-grab active:cursor-grabbing touch-pan-y ${
+          isMe ? 'bg-cyan/5 border-cyan/30' : 'bg-bg2 border-border'
+        }`}
+      >
+        {msg.replyTo && (
+          <div className="mb-1.5 p-1.5 rounded bg-bg/50 border-l-2 border-cyan text-[11px] font-mono opacity-70 overflow-hidden">
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className="text-cyan text-[8px] uppercase tracking-tighter font-bold">{msg.replyTo.from === user.qc ? 'You' : 'Contact'}</span>
+            </div>
+            <p className="truncate italic leading-tight font-body text-[13px]">{msg.replyTo.text}</p>
+          </div>
+        )}
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+          <p className="flex-1 text-[16px] md:text-[18px] font-body leading-relaxed text-text min-w-[50px] py-0.5">
+            {msg.text}
+          </p>
+          <div className="flex items-center gap-1 shrink-0 self-end mb-0.5 select-none opacity-60">
+            <span className="text-[10px] font-body tracking-tighter">
+              {msg.timestamp?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+            {isMe && (
+              <div className="flex items-center">
+                {msg.seenByRecipient ? (
+                  <CheckCheck size={12} className="text-cyan" />
+                ) : (
+                  <Check size={12} className="text-muted" />
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
 
 function ChatListItem({ chat, user, active, isBlocked, onClick }) {
   const [unreadCount, setUnreadCount] = useState(0);
@@ -138,6 +209,7 @@ export default function ChatsPanel({
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [showNicknameModal, setShowNicknameModal] = useState(false);
   const [nicknameInput, setNicknameInput] = useState('');
+  const [replyingTo, setReplyingTo] = useState(null);
   const menuRef = useRef(null);
   const emojiRef = useRef(null);
   const [confirmConfig, setConfirmConfig] = useState(null);
@@ -270,7 +342,16 @@ export default function ChatsPanel({
 
             try {
               const text = await decryptMessage(data.ciphertext, chatSeed);
-              return { id: d.id, ...data, text };
+              let replyTo = null;
+              if (data.replyTo) {
+                try {
+                  const replyText = await decryptMessage(data.replyTo.ciphertext, chatSeed);
+                  replyTo = { ...data.replyTo, text: replyText };
+                } catch (e) {
+                  replyTo = { ...data.replyTo, text: '[ENCRYPTED]' };
+                }
+              }
+              return { id: d.id, ...data, text, replyTo };
             } catch (e) {
               return { id: d.id, ...data, text: '[ENCRYPTED]' };
             }
@@ -363,6 +444,18 @@ export default function ChatsPanel({
 
     const chatSeed = `CHAT_SEED_${chatId}`;
     const encrypted = await encryptMessage(text, chatSeed);
+    
+    let replyToData = null;
+    if (replyingTo) {
+      const encryptedQuote = await encryptMessage(replyingTo.text, chatSeed);
+      replyToData = {
+        ciphertext: encryptedQuote,
+        from: replyingTo.from,
+        id: replyingTo.id
+      };
+      setReplyingTo(null);
+    }
+
     await addDoc(collections.messages(chatId), {
       from: user.qc,
       to: activeChat.qc,
@@ -370,7 +463,8 @@ export default function ChatsPanel({
       timestamp: serverTimestamp(),
       seenBySender: true,
       seenByRecipient: false,
-      vanishMode: false
+      vanishMode: false,
+      replyTo: replyToData
     }).catch(e => handleFirestoreError(e, OperationType.CREATE, `messages/${chatId}/msgs`));
   };
 
@@ -671,37 +765,65 @@ export default function ChatsPanel({
               </div>
             </header>
 
-            <div ref={scrollRef} onClick={() => inputRef.current?.blur()} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 custom-scrollbar">
+            <div ref={scrollRef} onClick={() => inputRef.current?.blur()} className="flex-1 overflow-y-auto px-2 py-4 md:px-3 md:py-6 space-y-2 custom-scrollbar">
               {messages.map((msg) => (
-                <div key={msg.id} className={`flex ${msg.from === user.qc ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-3 rounded-lg border ${msg.from === user.qc ? 'bg-cyan/5 border-cyan/30' : 'bg-bg2 border-border'}`}>
-                    <p className="text-[14px] md:text-[16px] font-mono leading-relaxed break-words">{msg.text}</p>
-                    <div className="flex items-center justify-end gap-1 mt-1">
-                      <span className="text-[10px] font-mono text-muted/50">
-                        {msg.timestamp?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                      {msg.from === user.qc && (msg.seenByRecipient ? <CheckCheck size={10} className="text-cyan" /> : <Check size={10} className="text-muted" />)}
-                    </div>
-                  </div>
-                </div>
+                <MessageBubble 
+                  key={msg.id} 
+                  msg={msg} 
+                  user={user} 
+                  onReply={(m) => {
+                    setReplyingTo(m);
+                    inputRef.current?.focus();
+                  }} 
+                />
               ))}
             </div>
 
-            <div className="p-3 md:p-4 border-t border-border bg-bg2 relative">
-              {showEmojiPicker && (
-                <div ref={emojiRef} className="absolute bottom-full left-4 mb-2">
-                  <EmojiPicker onSelect={(emoji) => setInputText(prev => prev + emoji)} onClose={() => setShowEmojiPicker(false)} />
-                </div>
-              )}
-              <form onSubmit={handleSendMessage} className="flex items-center gap-2 md:gap-3">
-                <button type="button" onClick={() => setShowEmojiPicker(!showEmojiPicker)} className={`p-2 rounded border transition-all ${showEmojiPicker ? 'border-cyan text-cyan' : 'text-muted'}`}>
-                  <Smile size={20} />
-                </button>
-                <input ref={inputRef} type="text" value={inputText} onChange={handleTyping} placeholder="ENCRYPTED SIGNAL..." className="flex-1 bg-bg border border-border px-4 py-2 text-xs md:text-sm font-mono focus:border-cyan outline-none rounded-full" />
-                <button type="submit" disabled={!inputText.trim()} className="px-6 py-2 bg-cyan text-bg font-display text-[10px] uppercase hover:bg-cyan/80 transition-all shadow-glow-cyan">
-                  Transmit
-                </button>
-              </form>
+            <div className="border-t border-border bg-bg2 relative">
+              <AnimatePresence>
+                {replyingTo && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="px-4 py-1.5 bg-bg3 border-l-4 border-cyan flex items-center justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[9px] font-display text-cyan uppercase tracking-tighter">
+                            Replying to {replyingTo.from === user.qc ? 'Yourself' : (activeChat.nickname || activeChat.qc)}
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-mono text-muted truncate italic">{replyingTo.text}</p>
+                      </div>
+                      <button 
+                        onClick={() => setReplyingTo(null)}
+                        className="p-1 hover:bg-white/5 rounded text-muted hover:text-red transition-colors"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <div className="p-3 md:p-4">
+                {showEmojiPicker && (
+                  <div ref={emojiRef} className="absolute bottom-full left-4 mb-2">
+                    <EmojiPicker onSelect={(emoji) => setInputText(prev => prev + emoji)} onClose={() => setShowEmojiPicker(false)} />
+                  </div>
+                )}
+                <form onSubmit={handleSendMessage} className="flex items-center gap-2 md:gap-3">
+                  <button type="button" onClick={() => setShowEmojiPicker(!showEmojiPicker)} className={`p-2 rounded border transition-all ${showEmojiPicker ? 'border-cyan text-cyan' : 'text-muted'}`}>
+                    <Smile size={20} />
+                  </button>
+                  <input ref={inputRef} type="text" value={inputText} onChange={handleTyping} placeholder="ENCRYPTED SIGNAL..." className="flex-1 bg-bg border border-border px-4 py-2 text-sm md:text-base font-mono focus:border-cyan outline-none rounded-full" />
+                  <button type="submit" disabled={!inputText.trim()} className="px-6 py-2 bg-cyan text-bg font-display text-[10px] uppercase hover:bg-cyan/80 transition-all shadow-glow-cyan">
+                    Transmit
+                  </button>
+                </form>
+              </div>
             </div>
           </>
         ) : (
