@@ -593,8 +593,9 @@ export default function ChatsPanel({
             </header>
 
             {keyError && (
-              <div className="px-4 py-2 bg-red/10 border-b border-red/30 text-[10px] font-mono text-red uppercase">
-                ⚠ Cannot derive shared key: {keyError}
+              <div className="px-4 py-2 bg-red/10 border-b border-red/30 text-[10px] font-mono text-red uppercase leading-relaxed">
+                ⚠ Security Protocol Failure: {keyError}
+                <div className="mt-1 opacity-60 text-[8px]">TIP: If this persists, the peer might have reset their identity. Try re-establishing the connection.</div>
               </div>
             )}
 

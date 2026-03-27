@@ -17,7 +17,7 @@ import {
 import { Shield, Check, X, Bell, UserPlus, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-export default function NotificationsPanel({ user, onClose }) {
+export default function NotificationsPanel({ user, onClose, showToast }) {
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -85,8 +85,10 @@ export default function NotificationsPanel({ user, onClose }) {
       });
       
       console.log('[AUTH] Authorization complete.');
+      showToast?.(`Established secure connection with ${request.from}`, 'info');
     } catch (err) {
       console.error('[AUTH] Authorization failed:', err);
+      showToast?.('Security protocol failed. Check network.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, `chat_requests/${request.id}`);
     }
   };
