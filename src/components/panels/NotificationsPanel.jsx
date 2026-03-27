@@ -8,6 +8,7 @@ import {
   updateDoc,
   deleteDoc,
   doc,
+  getDoc,
   setDoc,
   serverTimestamp,
   handleFirestoreError,
@@ -42,25 +43,50 @@ export default function NotificationsPanel({ user, onClose }) {
   }, [user]);
 
   const handleAccept = async (request) => {
+    console.log('[AUTH] Starting authorization for:', request.from);
     try {
+      // Fetch public keys for both parties to store in connections
+      const [fromSnap, toSnap] = await Promise.all([
+        getDoc(doc(collections.accounts, request.from)),
+        getDoc(doc(collections.accounts, request.to))
+      ]);
+
+      if (!fromSnap.exists() || !toSnap.exists()) {
+        console.error('[AUTH] Failed to fetch account data for peers');
+        showToast?.('One or more identities not found on network.', 'error');
+        return;
+      }
+
+      const fromPubKey = fromSnap.data()?.publicKeyJwk;
+      const toPubKey = toSnap.data()?.publicKeyJwk;
+
+      console.log('[AUTH] Public keys fetched, establishing channel...');
+
       // 1. Add to current user's contacts
       await setDoc(doc(collections.contacts(user.qc), request.from), {
         qc: request.from,
+        publicKeyJwk: fromPubKey || null,
         addedAt: serverTimestamp()
       });
 
       // 2. Add current user to sender's contacts
       await setDoc(doc(collections.contacts(request.from), user.qc), {
         qc: user.qc,
+        publicKeyJwk: toPubKey || null,
         addedAt: serverTimestamp()
       });
+
+      console.log('[AUTH] Contacts established, updating request status...');
 
       // 3. Update request status
       await updateDoc(doc(collections.chatRequests, request.id), {
         status: 'accepted',
         respondedAt: serverTimestamp()
       });
+      
+      console.log('[AUTH] Authorization complete.');
     } catch (err) {
+      console.error('[AUTH] Authorization failed:', err);
       handleFirestoreError(err, OperationType.UPDATE, `chat_requests/${request.id}`);
     }
   };

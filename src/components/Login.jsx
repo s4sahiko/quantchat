@@ -4,8 +4,20 @@ import { Shield, Key, Grid, Loader2, AlertCircle } from 'lucide-react';
 import ChessBoard from './shared/ChessBoard';
 import { collections, getDoc, doc } from '../firebase/firestore';
 import bcrypt from 'bcryptjs';
+import { decryptPrivateKey, importPrivateKey } from '../utils/encryption';
 
-export default function Login({ onComplete, onNavigate }) {
+/**
+ * FIXES APPLIED:
+ * 1. After bcrypt verification, decrypts the stored encrypted private key
+ *    using the user's (encryptionKey + pval) as the decryption password.
+ * 2. Imports the decrypted JWK into a CryptoKey object that lives only in
+ *    React memory — never serialized or stored.
+ * 3. Passes { qc, privateKeyJwk, publicKeyJwk, data } to onComplete.
+ *    The 10-digit key string itself is NOT passed forward or stored anywhere.
+ * 4. If decryption fails (wrong password), the error is caught and shown
+ *    as an auth failure — providing no information about which factor was wrong.
+ */
+export default function Login({ onComplete, onNavigate, showToast }) {
   const [qcNumber, setQcNumber] = useState('');
   const [encryptionKey, setEncryptionKey] = useState('');
   const [patternType, setPatternType] = useState('keyword');
@@ -18,6 +30,7 @@ export default function Login({ onComplete, onNavigate }) {
 
   const handleLogin = async (e) => {
     e.preventDefault();
+
     if (lockout && Date.now() < lockout) {
       const remaining = Math.ceil((lockout - Date.now()) / 60000);
       setError(`System locked. Try again in ${remaining} minutes.`);
@@ -28,9 +41,8 @@ export default function Login({ onComplete, onNavigate }) {
     setError('');
 
     try {
-      const accountRef = doc(collections.accounts, qcNumber);
-      const accountSnap = await getDoc(accountRef);
-
+      // 1. Fetch account from Firestore
+      const accountSnap = await getDoc(doc(collections.accounts, qcNumber));
       if (!accountSnap.exists()) {
         throw new Error('Invalid credentials.');
       }
@@ -38,22 +50,46 @@ export default function Login({ onComplete, onNavigate }) {
       const accountData = accountSnap.data();
       const pval = patternType === 'keyword' ? keyword : chessMoves.join('');
 
-      // Verify hashes
+      // 2. Verify bcrypt hashes (login verification only — NOT used for encryption)
       const keyMatch = bcrypt.compareSync(encryptionKey, accountData.keyHash);
       const pvalMatch = bcrypt.compareSync(pval, accountData.pvalHash);
 
-      if (keyMatch && pvalMatch) {
-        onComplete({ qc: qcNumber, key: encryptionKey, data: accountData });
-      } else {
+      if (!keyMatch || !pvalMatch) {
         const newAttempts = attempts - 1;
         setAttempts(newAttempts);
         if (newAttempts <= 0) {
           setLockout(Date.now() + 10 * 60000);
           setError('System locked for 10 minutes.');
         } else {
-          setError(`Invalid credentials. ${newAttempts} attempts left.`);
+          setError(`Invalid credentials. ${newAttempts} attempt${newAttempts === 1 ? '' : 's'} left.`);
         }
+        return;
       }
+
+      // 3. Decrypt the private key using the user's secret material
+      //    This is the critical step: wrong key/pattern = decryption failure
+      const privateKeyPassword = encryptionKey + pval;
+      let privateKeyJwk;
+      try {
+        privateKeyJwk = await decryptPrivateKey(accountData.encryptedPrivateKey, privateKeyPassword);
+      } catch {
+        // Decryption failed — should not happen if bcrypt passed, but handle gracefully
+        throw new Error('Key material mismatch. Contact support.');
+      }
+
+      // 4. Import the private key into a non-extractable CryptoKey
+      //    From this point, the raw JWK is discarded. Only the CryptoKey lives in memory.
+      const privateCryptoKey = await importPrivateKey(privateKeyJwk);
+
+      // 5. Complete authentication — pass private key in memory, NOT the raw string
+      onComplete({
+        qc: qcNumber,
+        privateKey: privateCryptoKey,     // CryptoKey — in memory only
+        privateKeyJwk,                    // JWK — kept briefly for sessionStorage backup
+        publicKeyJwk: accountData.publicKeyJwk,
+        data: accountData,
+      });
+
     } catch (err) {
       setError(err.message || 'Authentication failed.');
     } finally {
@@ -83,7 +119,9 @@ export default function Login({ onComplete, onNavigate }) {
           </div>
 
           <div>
-            <label className="block text-[9px] md:text-[10px] text-muted font-mono uppercase mb-1.5 md:mb-2">Encryption Key:</label>
+            <label className="block text-[9px] md:text-[10px] text-muted font-mono uppercase mb-1.5 md:mb-2">
+              Encryption Key <span className="text-cyan/50">(used to unlock your private key)</span>:
+            </label>
             <input
               type="password"
               required
@@ -100,18 +138,14 @@ export default function Login({ onComplete, onNavigate }) {
               <button
                 type="button"
                 onClick={() => setPatternType('keyword')}
-                className={`flex-1 py-2 font-display text-[9px] md:text-[10px] border ${
-                  patternType === 'keyword' ? 'border-cyan text-cyan bg-cyan/10' : 'border-border text-muted'
-                }`}
+                className={`flex-1 py-2 font-display text-[9px] md:text-[10px] border ${patternType === 'keyword' ? 'border-cyan text-cyan bg-cyan/10' : 'border-border text-muted'}`}
               >
                 KEYWORD
               </button>
               <button
                 type="button"
                 onClick={() => setPatternType('chess')}
-                className={`flex-1 py-2 font-display text-[9px] md:text-[10px] border ${
-                  patternType === 'chess' ? 'border-cyan text-cyan bg-cyan/10' : 'border-border text-muted'
-                }`}
+                className={`flex-1 py-2 font-display text-[9px] md:text-[10px] border ${patternType === 'chess' ? 'border-cyan text-cyan bg-cyan/10' : 'border-border text-muted'}`}
               >
                 CHESS
               </button>

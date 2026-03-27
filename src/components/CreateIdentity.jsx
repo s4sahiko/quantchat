@@ -4,11 +4,23 @@ import { Shield, Key, Grid, CheckCircle, Copy, Loader2, ChevronLeft } from 'luci
 import ChessBoard from './shared/ChessBoard';
 import bcrypt from 'bcryptjs';
 import { collections, setDoc, doc, serverTimestamp } from '../firebase/firestore';
+import {
+  generateKeyPair,
+  encryptPrivateKey,
+} from '../utils/encryption';
 
-export default function CreateIdentity({ onNavigate, onComplete }) {
+/**
+ * FIXES APPLIED:
+ * 1. Generates a real ECDH P-256 key pair on identity creation.
+ * 2. Stores the PUBLIC key in plaintext in Firestore (it's public by design).
+ * 3. Stores the PRIVATE key encrypted with AES-256-GCM using a key derived
+ *    from (encryptionKey + pval). The raw private key NEVER touches Firestore.
+ * 4. The 10-digit key is now actually used as cryptographic material.
+ */
+export default function CreateIdentity({ onNavigate, onComplete, showToast }) {
   const [step, setStep] = useState(1);
   const [encryptionKey, setEncryptionKey] = useState('');
-  const [patternType, setPatternType] = useState('keyword'); // 'keyword' | 'chess'
+  const [patternType, setPatternType] = useState('keyword');
   const [keyword, setKeyword] = useState('');
   const [chessMoves, setChessMoves] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -19,35 +31,57 @@ export default function CreateIdentity({ onNavigate, onComplete }) {
     setLoading(true);
     setError('');
     try {
-      // In a real app, we'd call the Cloud Function. 
-      // Since we can't deploy functions here, we'll simulate it with a local mock.
-      // BUT the user wants the code for it. I'll implement a mock for the UI to work.
-      
       const pval = patternType === 'keyword' ? keyword : chessMoves.join('');
-      const pvalHash = bcrypt.hashSync(pval, 10);
-      const keyHash = bcrypt.hashSync(encryptionKey, 10);
 
-      // Simulate network delay
-      await new Promise(r => setTimeout(r, 2000));
+      // 1. Hash the auth factors for login verification (bcrypt, never reversed)
+      const keyHash = bcrypt.hashSync(encryptionKey, 12);
+      const pvalHash = bcrypt.hashSync(pval, 12);
 
-      // Mocking the issueQuantCNumber logic
+      // 2. Generate a real ECDH key pair — THIS is the fix for E2E encryption
+      const { publicKeyJwk, privateKeyJwk } = await generateKeyPair();
+
+      // 3. Encrypt the private key with the user's secret material
+      //    Password = encryptionKey + pval — both factors are now used cryptographically
+      const privateKeyPassword = encryptionKey + pval;
+      const encryptedPrivateKey = await encryptPrivateKey(privateKeyJwk, privateKeyPassword);
+
+      // 4. Generate a unique QC number
       const randomNum = Math.floor(1000000000 + Math.random() * 9000000000);
       const qc = `QC-${randomNum}`;
-      
-      // Store in Firestore (simulating the Cloud Function's work)
+
+      // 5. Store in Firestore:
+      //    - publicKeyJwk: safe to store openly (ECDH public keys are meant to be shared)
+      //    - encryptedPrivateKey: AES-256-GCM encrypted blob; useless without the password
+      //    - keyHash / pvalHash: bcrypt hashes for login verification only
+      //    The RAW private key JWK is NEVER sent to Firestore
       await setDoc(doc(collections.accounts, qc), {
         qc,
         keyHash,
         pvalHash,
         ptype: patternType,
+        publicKeyJwk,        // ✅ Public key — safe to store openly
+        encryptedPrivateKey, // ✅ Private key encrypted at rest
         createdAt: serverTimestamp(),
         autoDelete: 'OFF',
-        notes: []
+        notes: [],
+        blocked: [],
       });
-      
+
       setIssuedQC(qc);
       setStep(4);
+
+      // 6. Auto-login: import private key into memory and call onComplete
+      //    We pass the raw private key JWK to the parent ONLY in memory,
+      //    never persisted to localStorage
+      onComplete({
+        qc,
+        privateKeyJwk,      // held in React state only
+        publicKeyJwk,
+        data: { ptype: patternType, autoDelete: 'OFF', notes: [], blocked: [] }
+      });
+
     } catch (err) {
+      console.error(err);
       setError('Failed to initialize identity. Try again.');
     } finally {
       setLoading(false);
@@ -77,14 +111,14 @@ export default function CreateIdentity({ onNavigate, onComplete }) {
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(issuedQC);
-    alert('QuantC Number copied to clipboard.');
+    showToast?.('QC Number copied to clipboard.', 'info');
   };
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 md:p-6">
       <div className="max-w-md w-full bg-bg2 border border-border p-6 md:p-8 rounded-lg shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-right from-transparent via-cyan to-transparent opacity-50" />
-        
+
         <AnimatePresence mode="wait">
           {step === 1 && (
             <motion.div
@@ -98,8 +132,8 @@ export default function CreateIdentity({ onNavigate, onComplete }) {
                 <h2 className="text-lg md:text-xl font-display">Step 1: Encryption Key</h2>
               </div>
               <p className="text-muted text-[11px] md:text-sm mb-4 md:mb-6 font-mono leading-relaxed">
-                Enter a 10-digit numeric key. This is your primary decryption seed. 
-                It is NEVER stored in plaintext.
+                Enter a 10-digit numeric key. This is used to <strong className="text-cyan">encrypt your private
+                key</strong> and is NEVER stored in plaintext. Losing it means permanent account loss.
               </p>
               <input
                 type="password"
@@ -133,17 +167,13 @@ export default function CreateIdentity({ onNavigate, onComplete }) {
               <div className="flex gap-2 mb-4 md:mb-6">
                 <button
                   onClick={() => setPatternType('keyword')}
-                  className={`flex-1 py-1.5 md:py-2 font-display text-[10px] md:text-xs border ${
-                    patternType === 'keyword' ? 'border-cyan text-cyan bg-cyan/10' : 'border-border text-muted'
-                  }`}
+                  className={`flex-1 py-1.5 md:py-2 font-display text-[10px] md:text-xs border ${patternType === 'keyword' ? 'border-cyan text-cyan bg-cyan/10' : 'border-border text-muted'}`}
                 >
                   KEYWORD
                 </button>
                 <button
                   onClick={() => setPatternType('chess')}
-                  className={`flex-1 py-1.5 md:py-2 font-display text-[10px] md:text-xs border ${
-                    patternType === 'chess' ? 'border-cyan text-cyan bg-cyan/10' : 'border-border text-muted'
-                  }`}
+                  className={`flex-1 py-1.5 md:py-2 font-display text-[10px] md:text-xs border ${patternType === 'chess' ? 'border-cyan text-cyan bg-cyan/10' : 'border-border text-muted'}`}
                 >
                   CHESS
                 </button>
@@ -167,12 +197,9 @@ export default function CreateIdentity({ onNavigate, onComplete }) {
               )}
 
               {error && <p className="text-red text-[10px] md:text-xs mb-4 font-mono">{error}</p>}
-              
+
               <div className="flex gap-2 md:gap-3">
-                <button
-                  onClick={() => setStep(1)}
-                  className="p-2.5 md:p-3 border border-border text-muted hover:text-text"
-                >
+                <button onClick={() => setStep(1)} className="p-2.5 md:p-3 border border-border text-muted hover:text-text">
                   <ChevronLeft size={20} />
                 </button>
                 <button
@@ -197,15 +224,15 @@ export default function CreateIdentity({ onNavigate, onComplete }) {
                 <Shield size={40} className="md:w-12 md:h-12 text-cyan animate-pulse" />
                 <h2 className="text-lg md:text-xl font-display">Initialize Identity</h2>
                 <p className="text-muted text-[11px] md:text-sm font-mono leading-relaxed px-2">
-                  Ready to broadcast your new identity to the Quant Network. 
-                  This process is irreversible.
+                  An ECDH P-256 key pair will be generated in your browser.
+                  Your private key will be encrypted before leaving this device.
                 </p>
               </div>
 
               {loading ? (
                 <div className="flex flex-col items-center gap-3 md:gap-4 py-6 md:py-8">
                   <Loader2 className="text-cyan animate-spin" size={28} />
-                  <p className="text-[10px] md:text-xs font-mono text-cyan uppercase tracking-widest">Generating QC Number...</p>
+                  <p className="text-[10px] md:text-xs font-mono text-cyan uppercase tracking-widest">Generating key pair...</p>
                 </div>
               ) : (
                 <button
@@ -215,12 +242,9 @@ export default function CreateIdentity({ onNavigate, onComplete }) {
                   CONFIRM & ISSUE
                 </button>
               )}
-              
+
               {!loading && (
-                <button
-                  onClick={() => setStep(2)}
-                  className="mt-4 text-[10px] md:text-xs font-mono text-muted uppercase hover:text-cyan transition-all"
-                >
+                <button onClick={() => setStep(2)} className="mt-4 text-[10px] md:text-xs font-mono text-muted uppercase hover:text-cyan transition-all">
                   Back to Pattern
                 </button>
               )}
@@ -240,24 +264,33 @@ export default function CreateIdentity({ onNavigate, onComplete }) {
                 Save this number. It is your only public identifier.
               </p>
 
-              <div className="bg-bg3 border border-cyan/30 p-3 md:p-4 rounded mb-6 md:mb-8 flex items-center justify-between">
+              <div className="bg-bg3 border border-cyan/30 p-3 md:p-4 rounded mb-4 flex items-center justify-between">
                 <span className="text-lg md:text-xl font-display text-cyan tracking-wider">{issuedQC}</span>
                 <button onClick={copyToClipboard} className="text-muted hover:text-cyan p-1">
                   <Copy size={18} className="md:w-5 md:h-5" />
                 </button>
               </div>
 
-              <div className="bg-red/10 border border-red/30 p-3 md:p-4 rounded mb-6 md:mb-8 text-left">
-                <p className="text-[9px] md:text-[10px] text-red font-mono uppercase font-bold mb-1">Warning:</p>
-                <p className="text-[9px] md:text-[10px] text-red/80 font-mono leading-relaxed">
-                  If you lose your 10-digit key or pattern, your account is PERMANENTLY lost. 
-                  There is no password reset. There is no recovery.
+              {/* Security info card */}
+              <div className="bg-cyan/5 border border-cyan/20 p-3 rounded mb-4 text-left">
+                <p className="text-[9px] md:text-[10px] text-cyan font-mono uppercase font-bold mb-1">E2E Key Generated:</p>
+                <p className="text-[9px] md:text-[10px] text-cyan/70 font-mono leading-relaxed">
+                  ECDH P-256 key pair generated locally. Private key encrypted
+                  with your 10-digit key + pattern before storage. Raw key never transmitted.
                 </p>
               </div>
 
+              <div className="bg-red/10 border border-red/30 p-3 md:p-4 rounded mb-6 md:mb-8 text-left">
+                <p className="text-[9px] md:text-[10px] text-red font-mono uppercase font-bold mb-1">Warning:</p>
+                <p className="text-[9px] md:text-[10px] text-red/80 font-mono leading-relaxed">
+                  If you lose your 10-digit key or pattern, your private key cannot be
+                  recovered. There is no reset. There is no recovery.
+                </p>
+              </div>
+              
               <button
-                onClick={() => onComplete({ qc: issuedQC, key: encryptionKey })}
-                className="w-full py-3 md:py-4 bg-cyan text-bg font-display text-base md:text-lg hover:bg-cyan/80 transition-all"
+                onClick={() => onNavigate('chat')}
+                className="w-full py-3 md:py-4 bg-cyan text-bg font-display text-base md:text-lg hover:bg-cyan/80 transition-all font-bold"
               >
                 ENTER NETWORK
               </button>

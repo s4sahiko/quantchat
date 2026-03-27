@@ -12,6 +12,7 @@ import { initScreenshotPrevention } from '../utils/screenshotBlock';
 import { Shield, User, MessageSquare, Globe, LogOut, Bell, ShieldAlert } from 'lucide-react';
 import { collections, onSnapshot, query, where, handleFirestoreError, OperationType, collectionGroup, db } from '../firebase/firestore';
 import { motion, AnimatePresence } from 'motion/react';
+import { importPrivateKey } from '../utils/encryption';
 
 export default function App() {
   const [view, setView] = useState('landing'); // landing | create | login | main
@@ -51,7 +52,7 @@ export default function App() {
     if (!user) return;
     try {
       const q = query(
-        collectionGroup(db, 'messages'),
+        collectionGroup(db, 'msgs'),
         where('to', '==', user.qc),
         where('seenByRecipient', '==', false)
       );
@@ -69,13 +70,27 @@ export default function App() {
 
   useEffect(() => {
     const saved = localStorage.getItem('qc_session');
-    if (saved) {
+    const jwkSaved = sessionStorage.getItem('qc_priv_jwk');
+    
+    if (saved && jwkSaved) {
       try {
         const parsed = JSON.parse(saved);
-        setUser(parsed);
-        setView('main');
+        const jwk = JSON.parse(jwkSaved);
+        
+        // Wrap in async to re-import private key
+        const restore = async () => {
+          try {
+            const privateKey = await importPrivateKey(jwk);
+            setUser({ ...parsed, privateKey, privateKeyJwk: jwk });
+            setView('main');
+          } catch (err) {
+            console.error('Session restoration failed:', err);
+            handleLogout();
+          }
+        };
+        restore();
       } catch (e) {
-        localStorage.removeItem('qc_session');
+        handleLogout();
       }
     }
   }, []);
@@ -200,14 +215,22 @@ export default function App() {
   }, [showNotifications]);
 
   const handleAuthComplete = (userData) => {
+    // 1. Store the sensitive JWK in sessionStorage only (backup for refresh)
+    if (userData.privateKeyJwk) {
+      sessionStorage.setItem('qc_priv_jwk', JSON.stringify(userData.privateKeyJwk));
+    }
+
+    // 2. Persist only the metadata in localStorage
+    const { privateKey, privateKeyJwk, ...persistData } = userData;
     setUser(userData);
-    localStorage.setItem('qc_session', JSON.stringify(userData));
+    localStorage.setItem('qc_session', JSON.stringify(persistData));
     setView('main');
   };
 
   const handleLogout = () => {
     setUser(null);
     localStorage.removeItem('qc_session');
+    sessionStorage.removeItem('qc_priv_jwk');
     setView('landing');
   };
 
@@ -250,7 +273,7 @@ export default function App() {
                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
                     className="fixed left-4 right-4 top-16 sm:absolute sm:inset-auto sm:top-auto sm:right-0 sm:mt-2 sm:w-80 md:w-96 h-[400px] md:h-[500px] bg-bg2 border border-border shadow-2xl z-[100] overflow-hidden rounded-lg origin-top-right"
                   >
-                    <NotificationsPanel user={user} onClose={() => toggleNotifications(false)} />
+                    <NotificationsPanel user={user} onClose={() => toggleNotifications(false)} showToast={showToast} />
                   </motion.div>
                 )}
               </AnimatePresence>
