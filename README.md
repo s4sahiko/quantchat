@@ -55,9 +55,22 @@ The app uses **Firebase Anonymous Auth** to generate a unique `uid`.
 ## 🚀 Getting Started
 
 ### Firebase Setup
-1.  Enable **Anonymous Sign-in** in the Firebase Console.
-2.  In Settings > User actions, check **"Enable create"**.
-3.  Deploy the security rules:
+To deploy to Vercel, you must set the following **Environment Variables** in the Vercel Dashboard (Settings > Environment Variables):
+
+| Variable | Value from your Config |
+| :--- | :--- |
+| `VITE_FIREBASE_API_KEY` | `apiKey` |
+| `VITE_FIREBASE_AUTH_DOMAIN` | `authDomain` |
+| `VITE_FIREBASE_PROJECT_ID` | `projectId` |
+| `VITE_FIREBASE_STORAGE_BUCKET` | `storageBucket` |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | `messagingSenderId` |
+| `VITE_FIREBASE_APP_ID` | `appId` |
+| `VITE_FIREBASE_FIRESTORE_DB_ID` | `firestoreDatabaseId` (optional) |
+
+> [!IMPORTANT]
+> Ensure **Anonymous Sign-in** is enabled and **"Enable create"** is checked in the Firebase Console (Authentication > Settings).
+
+1.  Deploy the security rules:
     ```bash
     firebase deploy --only firestore:rules
     firebase deploy --only database
