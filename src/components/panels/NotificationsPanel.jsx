@@ -14,7 +14,7 @@ import {
   handleFirestoreError,
   OperationType
 } from '../../firebase/firestore';
-import { auth } from '../../firebase/auth';
+import { auth, anonSignIn } from '../../firebase/auth';
 import { Shield, Check, X, Bell, UserPlus, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -46,6 +46,14 @@ export default function NotificationsPanel({ user, onClose, showToast }) {
   const handleAccept = async (request) => {
     console.log('[AUTH] Starting authorization for:', request.from);
     try {
+      // GUARD: Ensure Firebase Auth session is active before any Firestore writes.
+      // auth.currentUser can be null if the Firebase SDK hasn't finished its async
+      // init (e.g. right after page load). Re-auth here guarantees the token exists.
+      if (!auth.currentUser) {
+        console.log('[AUTH] No active Firebase session — re-establishing...');
+        await anonSignIn();
+      }
+
       // Fetch public keys for both parties to store in connections
       const [fromSnap, toSnap] = await Promise.all([
         getDoc(doc(collections.accounts, request.from)),
