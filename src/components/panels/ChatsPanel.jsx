@@ -16,19 +16,11 @@ import EmojiPicker from '../shared/EmojiPicker';
 
 // ─── SHARED KEY CACHE ──────────────────────────────────────────────────────────
 // Keeps derived ECDH keys in memory so we don't re-derive per message.
-// Keys are { chatId: CryptoKey }
 const sharedKeyCache = {};
 
-/**
- * Derives (or retrieves from cache) the ECDH shared AES key for a chat.
- * @param {CryptoKey} myPrivateKey - The logged-in user's ECDH private CryptoKey
- * @param {string} theirQC - The other party's QC number
- * @param {string} chatId - Cache key
- */
 async function getOrDeriveSharedKey(myPrivateKey, theirQC, chatId) {
   if (sharedKeyCache[chatId]) return sharedKeyCache[chatId];
 
-  // Fetch the other party's public key from Firestore
   const theirAccountSnap = await getDoc(doc(collections.accounts, theirQC));
   if (!theirAccountSnap.exists()) {
     throw new Error(`Account not found for ${theirQC}`);
@@ -39,7 +31,6 @@ async function getOrDeriveSharedKey(myPrivateKey, theirQC, chatId) {
     throw new Error(`No public key found for ${theirQC}. They may be using an older account version.`);
   }
 
-  // Derive the shared AES-256-GCM key via ECDH
   const sharedKey = await deriveSharedKey(myPrivateKey, theirPublicKeyJwk);
   sharedKeyCache[chatId] = sharedKey;
   return sharedKey;
@@ -119,8 +110,8 @@ export default function ChatsPanel({
   const [replyingTo, setReplyingTo] = useState(null);
   const [confirmConfig, setConfirmConfig] = useState(null);
   const [isConfirmProcessing, setIsConfirmProcessing] = useState(false);
-  const [keyError, setKeyError] = useState(null); // shown when ECDH key fetch fails
-  const [unreads, setUnreads] = useState({}); // { contactQc: count }
+  const [keyError, setKeyError] = useState(null);
+  const [unreads, setUnreads] = useState({});
   const menuRef = useRef(null);
   const emojiRef = useRef(null);
   const scrollRef = useRef();
@@ -196,15 +187,20 @@ export default function ChatsPanel({
     return () => clearInterval(interval);
   }, [messages, activeChat, chatId]);
 
-  // Contacts listener
+  // Contacts listener — FIX: removed handleFirestoreError rethrow
   useEffect(() => {
     if (!user) return;
     return onSnapshot(collections.contacts(user.qc), (snap) => {
       setChats(snap.docs.map(d => ({ qc: d.id, ...d.data() })));
-    }, (error) => handleFirestoreError(error, OperationType.LIST, `accounts/${user.qc}/contacts`));
+    }, (error) => {
+      console.error('[CONTACTS] Listener error:', error.message);
+      if (error.code === 'permission-denied') {
+        showToast('Session expired. Please log out and log back in.', 'error');
+      }
+    });
   }, [user]);
 
-  // Individual unread listeners for sidebar badges (replaces collectionGroup to avoid index issues)
+  // Individual unread listeners
   useEffect(() => {
     if (!user || chats.length === 0) return;
 
@@ -227,8 +223,7 @@ export default function ChatsPanel({
     return () => unsubs.forEach(unsub => unsub());
   }, [user, chats]);
 
-  // Sequential Handshake Listener: Detects when OUR outgoing requests are accepted
-  // and adds the peer to OUR own contact list (completing the mutual auth).
+  // Sequential Handshake Listener
   useEffect(() => {
     if (!user) return;
 
@@ -242,16 +237,13 @@ export default function ChatsPanel({
       for (const d of snap.docs) {
         const req = d.data();
         try {
-          // 1. Fetch peer's public key
           const peerSnap = await getDoc(doc(collections.accounts, req.to));
           if (peerSnap.exists()) {
-            // 2. Add to OUR contacts
             await setDoc(doc(collections.contacts(user.qc), req.to), {
               qc: req.to,
               publicKeyJwk: peerSnap.data().publicKeyJwk,
               addedAt: serverTimestamp()
             });
-            // 3. Mark request as finalized (delete or change status) so we don't process it again
             await deleteDoc(d.ref);
             showToast(`Secure connection with ${req.to} confirmed!`, 'success');
           }
@@ -262,7 +254,7 @@ export default function ChatsPanel({
     });
   }, [user]);
 
-  // ── MESSAGE LISTENER — KEY FIX ────────────────────────────────────────────
+  // ── MESSAGE LISTENER ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!activeChat || !user || !chatId) return;
 
@@ -271,7 +263,6 @@ export default function ChatsPanel({
 
     const setupListeners = async () => {
       try {
-        // ✅ FIX: Derive the real ECDH shared key instead of a public seed string
         const sharedKey = await getOrDeriveSharedKey(user.privateKey, activeChat.qc, chatId);
 
         unsubFirestore = onSnapshot(
@@ -283,7 +274,6 @@ export default function ChatsPanel({
               const data = d.data();
               if (isBlocked && data.from !== user.qc) return null;
               try {
-                // ✅ FIX: decrypt with real shared CryptoKey, not a seed string
                 const text = await decryptMessage(data.ciphertext, sharedKey);
                 let replyTo = null;
                 if (data.replyTo) {
@@ -311,7 +301,8 @@ export default function ChatsPanel({
               });
             }
           },
-          (error) => handleFirestoreError(error, OperationType.LIST, `messages/${chatId}/msgs`)
+          // FIX: removed handleFirestoreError rethrow
+          (error) => console.error('[MESSAGES] Listener error:', error.message)
         );
 
         unsubTyping = onValue(rtdbRefs.typing(chatId, activeChat.qc), (snap) => {
@@ -360,7 +351,7 @@ export default function ChatsPanel({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showEmojiPicker]);
 
-  // ── SEND MESSAGE — KEY FIX ────────────────────────────────────────────────
+  // ── SEND MESSAGE ──────────────────────────────────────────────────────────
   const handleSendMessage = async (e, directText) => {
     if (e) e.preventDefault();
     const text = directText || inputText;
@@ -369,7 +360,6 @@ export default function ChatsPanel({
     inputRef.current?.focus();
 
     try {
-      // ✅ FIX: encrypt with real ECDH shared key
       const sharedKey = await getOrDeriveSharedKey(user.privateKey, activeChat.qc, chatId);
       const encrypted = await encryptMessage(text, sharedKey);
 
@@ -491,6 +481,7 @@ export default function ChatsPanel({
     } catch (err) { console.error('Failed to update chat protocol:', err); }
   };
 
+  // FIX: removed handleFirestoreError rethrow — now gives specific toast for permission-denied
   const handleAddContact = async (e) => {
     e.preventDefault();
     setAddError('');
@@ -501,7 +492,6 @@ export default function ChatsPanel({
       const accountSnap = await getDoc(doc(collections.accounts, targetQC));
       if (!accountSnap.exists()) { setAddError('Identity not found on network'); return; }
 
-      // ✅ Check that the target account has a public key (new format required)
       if (!accountSnap.data().publicKeyJwk) {
         setAddError('This identity uses an incompatible version. Ask them to re-create their identity.');
         return;
@@ -517,18 +507,25 @@ export default function ChatsPanel({
       const targetUid = accountSnap.data().uid;
       const myUid = user.uid || (await getDoc(doc(collections.accounts, user.qc))).data().uid;
 
-      await addDoc(collections.chatRequests, { 
-        from: user.qc, 
-        to: targetQC, 
+      await addDoc(collections.chatRequests, {
+        from: user.qc,
+        to: targetQC,
         fromUid: myUid,
         toUid: targetUid,
-        status: 'pending', 
-        timestamp: serverTimestamp() 
+        status: 'pending',
+        timestamp: serverTimestamp()
       });
       setNewContactQC('');
       setIsAddingContact(false);
       showToast('Authorization request broadcasted.', 'info');
-    } catch (err) { handleFirestoreError(err, OperationType.CREATE, 'chat_requests'); }
+    } catch (err) {
+      console.error('[CONTACT] Failed to send auth request:', err);
+      if (err.code === 'permission-denied') {
+        showToast('Auth session expired. Please log out and log back in.', 'error');
+      } else {
+        showToast('Failed to send authorization request.', 'error');
+      }
+    }
   };
 
   return (

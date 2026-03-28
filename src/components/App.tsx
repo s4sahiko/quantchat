@@ -12,7 +12,7 @@ import { initScreenshotPrevention } from '../utils/screenshotBlock';
 import { saveSessionKey, restoreSessionKey, clearSessionKey } from '../utils/sessionKeyStore';
 import { Shield, User, MessageSquare, Globe, LogOut, Bell, ShieldAlert } from 'lucide-react';
 import { collections, onSnapshot, query, where, handleFirestoreError, OperationType, collectionGroup, db } from '../firebase/firestore';
-import { auth, onAuthStateChanged } from '../firebase/auth';
+import { auth, onAuthStateChanged, anonSignIn } from '../firebase/auth';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
@@ -79,8 +79,22 @@ export default function App() {
       const privateKey = await restoreSessionKey();
 
       if (privateKey) {
-        // Both halves present — restore the full user object with live CryptoKey
-        setUser({ ...sessionData, privateKey });
+        // FIX: Re-establish Firebase Auth anonymous session on every restore.
+        // Without this, auth.currentUser is null after a page refresh and all
+        // Firestore writes fail with permission-denied — causing the AUTH button
+        // "Security protocol failed" error and making the session unusable.
+        let uid = sessionData.uid;
+        try {
+          // signInAnonymously is idempotent: if a valid session already exists
+          // in Firebase Auth (token not expired), it returns the same user.
+          // If it has expired, it mints a fresh anonymous user.
+          const authUser = await anonSignIn();
+          uid = authUser.uid;
+        } catch (authErr) {
+          console.warn('[SESSION RESTORE] Firebase re-auth failed:', authErr.message);
+          // Proceed anyway — reads still work; user will need to re-login for writes.
+        }
+        setUser({ ...sessionData, privateKey, uid });
         setView('main');
       } else {
         // Wrapping key missing (e.g. cleared IndexedDB) — require re-login

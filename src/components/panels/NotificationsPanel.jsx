@@ -59,7 +59,6 @@ export default function NotificationsPanel({ user, onClose, showToast }) {
       }
 
       const fromPubKey = fromSnap.data()?.publicKeyJwk;
-      const toPubKey = toSnap.data()?.publicKeyJwk;
 
       console.log('[AUTH] Public keys fetched, establishing channel...');
 
@@ -70,29 +69,31 @@ export default function NotificationsPanel({ user, onClose, showToast }) {
         addedAt: serverTimestamp()
       });
 
-      // NOTE: We no longer try to write to the requester's contacts here (Step 2).
-      // That cross-write is blocked by strict security rules. 
+      // NOTE: We no longer try to write to the requester's contacts here.
+      // That cross-write is blocked by strict security rules.
       // The requester will now add US to their own contacts via a listener in ChatsPanel.
-
 
       console.log('[AUTH] Contacts established, updating request status...');
 
-      // 3. Update request status
+      // Update request status
       await updateDoc(doc(collections.chatRequests, request.id), {
         status: 'accepted',
         respondedAt: serverTimestamp()
       });
-      
+
       console.log('[AUTH] Authorization complete.');
       showToast?.(`Established secure connection with ${request.from}`, 'info');
     } catch (err) {
       console.error('[AUTH] Authorization failed:', err);
-      // Detailed logging for debugging security rules
+      // NOTE: do NOT call handleFirestoreError here — it rethrows, causing an
+      // unhandled promise rejection on top of the one we already caught.
       if (err.code === 'permission-denied') {
-        console.error('[AUTH] FIREBASE PERMISSION DENIED. Check your uid:', auth.currentUser?.uid);
+        console.error('[AUTH] FIREBASE PERMISSION DENIED. auth.currentUser:', auth.currentUser?.uid ?? 'null — session not restored');
+        showToast?.('Auth session expired. Please log out and log back in.', 'error');
+      } else {
+        showToast?.('Security protocol failed. Check network.', 'error');
       }
-      showToast?.('Security protocol failed. Check network.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, `chat_requests/${request.id}`);
+      console.error('[AUTH] Error details:', { code: err.code, message: err.message });
     }
   };
 
@@ -184,6 +185,6 @@ export default function NotificationsPanel({ user, onClose, showToast }) {
           Unauthorized requests are isolated and cannot access your identity metadata.
         </p>
       </div>
-    </div >
+    </div>
   );
 }
