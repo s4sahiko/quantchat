@@ -302,7 +302,12 @@ export default function ChatsPanel({
             }
           },
           // FIX: removed handleFirestoreError rethrow
-          (error) => console.error('[MESSAGES] Listener error:', error.message)
+          (error) => {
+            console.error('[MESSAGES] Listener error:', error.message);
+            if (error.code === 'permission-denied') {
+              showToast?.('Auth session expired. Please log out and back in.', 'error');
+            }
+          }
         );
 
         unsubTyping = onValue(rtdbRefs.typing(chatId, activeChat.qc), (snap) => {

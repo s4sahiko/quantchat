@@ -45,74 +45,81 @@ export default function NotificationsPanel({ user, onClose, showToast }) {
 
   const handleAccept = async (request) => {
     console.log('[AUTH] Starting authorization for:', request.from);
-    try {
-      // GUARD: Ensure Firebase Auth session is active before any Firestore writes.
-      // auth.currentUser can be null if the Firebase SDK hasn't finished its async
-      // init (e.g. right after page load). Re-auth here guarantees the token exists.
-      if (!auth.currentUser) {
-        console.log('[AUTH] No active Firebase session — re-establishing...');
+
+    // Robust auth helper — always forces a fresh Firebase token before writes.
+    // Retries up to maxAttempts times with a short delay between each attempt.
+    const attemptAccept = async (attempt = 1, maxAttempts = 3) => {
+      // Always re-establish Firebase session before writing — this is cheap if
+      // a session already exists (Firebase returns the cached user immediately).
+      try {
         await anonSignIn();
+        console.log('[AUTH] Firebase session ready, uid:', auth.currentUser?.uid);
+      } catch (authErr) {
+        console.warn('[AUTH] anonSignIn failed:', authErr.message);
+        // Continue — maybe the session is already valid
       }
 
-      // Fetch public keys for both parties to store in connections
-      const [fromSnap, toSnap] = await Promise.all([
-        getDoc(doc(collections.accounts, request.from)),
-        getDoc(doc(collections.accounts, request.to))
-      ]);
-
-      if (!fromSnap.exists() || !toSnap.exists()) {
-        console.error('[AUTH] Failed to fetch account data for peers');
-        showToast?.('One or more identities not found on network.', 'error');
-        return;
+      if (!auth.currentUser) {
+        if (attempt < maxAttempts) {
+          console.warn(`[AUTH] auth.currentUser still null, retrying (${attempt}/${maxAttempts})...`);
+          await new Promise(r => setTimeout(r, 500 * attempt));
+          return attemptAccept(attempt + 1, maxAttempts);
+        }
+        throw new Error('Firebase Auth could not be established after multiple attempts.');
       }
 
-      const fromPubKey = fromSnap.data()?.publicKeyJwk;
+      // Fetch public key of the requester
+      const fromSnap = await getDoc(doc(collections.accounts, request.from));
+      if (!fromSnap.exists()) {
+        throw new Error(`Identity not found on network: ${request.from}`);
+      }
+      const fromPubKey = fromSnap.data()?.publicKeyJwk ?? null;
 
-      console.log('[AUTH] Public keys fetched, establishing channel...');
+      console.log('[AUTH] Adding requester to contacts...');
 
-      // 1. Add THE REQUESTER to CURRENT USER'S contacts
+      // Write requester into current user's contacts
       await setDoc(doc(collections.contacts(user.qc), request.from), {
         qc: request.from,
-        publicKeyJwk: fromPubKey || null,
+        publicKeyJwk: fromPubKey,
         addedAt: serverTimestamp()
       });
 
-      // NOTE: We no longer try to write to the requester's contacts here.
-      // That cross-write is blocked by strict security rules.
-      // The requester will now add US to their own contacts via a listener in ChatsPanel.
-
-      console.log('[AUTH] Contacts established, updating request status...');
-
-      // Update request status
+      // Mark the request as accepted — the requester's ChatsPanel listener
+      // will detect this and add us to their own contacts (sequential handshake)
       await updateDoc(doc(collections.chatRequests, request.id), {
         status: 'accepted',
         respondedAt: serverTimestamp()
       });
 
       console.log('[AUTH] Authorization complete.');
-      showToast?.(`Established secure connection with ${request.from}`, 'info');
+      showToast?.(`Secure channel established with ${request.from}`, 'info');
+    };
+
+    try {
+      await attemptAccept();
     } catch (err) {
-      console.error('[AUTH] Authorization failed:', err);
-      // NOTE: do NOT call handleFirestoreError here — it rethrows, causing an
-      // unhandled promise rejection on top of the one we already caught.
+      console.error('[AUTH] Authorization failed after retries:', err);
+      console.error('[AUTH] auth.currentUser at failure:', auth.currentUser?.uid ?? 'null');
       if (err.code === 'permission-denied') {
-        console.error('[AUTH] FIREBASE PERMISSION DENIED. auth.currentUser:', auth.currentUser?.uid ?? 'null — session not restored');
-        showToast?.('Auth session expired. Please log out and log back in.', 'error');
+        showToast?.('Permission denied — please refresh and try again.', 'error');
+      } else if (err.message?.includes('Firebase Auth')) {
+        showToast?.('Network issue — could not authenticate. Check your connection.', 'error');
       } else {
-        showToast?.('Security protocol failed. Check network.', 'error');
+        showToast?.(`Authorization failed: ${err.message}`, 'error');
       }
-      console.error('[AUTH] Error details:', { code: err.code, message: err.message });
     }
   };
 
   const handleReject = async (request) => {
     try {
+      if (!auth.currentUser) await anonSignIn();
       await updateDoc(doc(collections.chatRequests, request.id), {
         status: 'rejected',
         respondedAt: serverTimestamp()
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `chat_requests/${request.id}`);
+      console.error('[AUTH] Rejection failed:', err);
+      showToast?.('Update failed. Check your connection.', 'error');
     }
   };
 
