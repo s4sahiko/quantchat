@@ -78,28 +78,51 @@ export default function App() {
       const sessionData = JSON.parse(savedSession);
       const privateKey = await restoreSessionKey();
 
-      if (privateKey) {
-        // FIX: Re-establish Firebase Auth anonymous session on every restore.
-        // Without this, auth.currentUser is null after a page refresh and all
-        // Firestore writes fail with permission-denied — causing the AUTH button
-        // "Security protocol failed" error and making the session unusable.
-        let uid = sessionData.uid;
-        try {
-          // signInAnonymously is idempotent: if a valid session already exists
-          // in Firebase Auth (token not expired), it returns the same user.
-          // If it has expired, it mints a fresh anonymous user.
-          const authUser = await anonSignIn();
-          uid = authUser.uid;
-        } catch (authErr) {
-          console.warn('[SESSION RESTORE] Firebase re-auth failed:', authErr.message);
-          // Proceed anyway — reads still work; user will need to re-login for writes.
-        }
-        setUser({ ...sessionData, privateKey, uid });
-        setView('main');
-      } else {
+      if (!privateKey) {
         // Wrapping key missing (e.g. cleared IndexedDB) — require re-login
         localStorage.removeItem('qc_session');
+        return;
       }
+
+      // ROOT FIX: Wait for Firebase Auth to finish restoring its OWN persisted
+      // session before we do anything. Firebase Auth stores its token in
+      // localStorage/IndexedDB and replays it asynchronously on init.
+      //
+      // The previous fix called anonSignIn() immediately, which races with
+      // that restore and often creates a BRAND NEW anonymous UID — which no
+      // longer matches the uid stored in the account doc — so Firestore rules
+      // that check request.auth.uid reject every write with permission-denied.
+      //
+      // onAuthStateChanged fires exactly once with the restored user (or null)
+      // once auth is initialised. We wait for that, then only call anonSignIn()
+      // if there is genuinely no existing session.
+      const firebaseUser = await new Promise((resolve) => {
+        const unsub = onAuthStateChanged(auth, (u) => {
+          unsub(); // unsubscribe immediately — we only need the first event
+          resolve(u);
+        });
+      });
+
+      let uid;
+      if (firebaseUser) {
+        // Reuse the existing anonymous session — same UID as stored in Firestore
+        uid = firebaseUser.uid;
+        console.log('[SESSION RESTORE] Reusing Firebase session uid:', uid);
+      } else {
+        // No existing Firebase Auth session — create a fresh anonymous one
+        try {
+          const newUser = await anonSignIn();
+          uid = newUser.uid;
+          console.log('[SESSION RESTORE] Created new Firebase session uid:', uid);
+        } catch (authErr) {
+          console.warn('[SESSION RESTORE] Firebase anonymous sign-in failed:', authErr.message);
+          // Proceed without uid — reads still work; writes may fail
+          uid = sessionData.uid;
+        }
+      }
+
+      setUser({ ...sessionData, privateKey, uid });
+      setView('main');
     })();
   }, []); // runs once on mount
 
