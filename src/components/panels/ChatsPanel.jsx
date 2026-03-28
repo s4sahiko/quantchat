@@ -227,6 +227,41 @@ export default function ChatsPanel({
     return () => unsubs.forEach(unsub => unsub());
   }, [user, chats]);
 
+  // Sequential Handshake Listener: Detects when OUR outgoing requests are accepted
+  // and adds the peer to OUR own contact list (completing the mutual auth).
+  useEffect(() => {
+    if (!user) return;
+
+    const q = query(
+      collections.chatRequests,
+      where('from', '==', user.qc),
+      where('status', '==', 'accepted')
+    );
+
+    return onSnapshot(q, async (snap) => {
+      for (const d of snap.docs) {
+        const req = d.data();
+        try {
+          // 1. Fetch peer's public key
+          const peerSnap = await getDoc(doc(collections.accounts, req.to));
+          if (peerSnap.exists()) {
+            // 2. Add to OUR contacts
+            await setDoc(doc(collections.contacts(user.qc), req.to), {
+              qc: req.to,
+              publicKeyJwk: peerSnap.data().publicKeyJwk,
+              addedAt: serverTimestamp()
+            });
+            // 3. Mark request as finalized (delete or change status) so we don't process it again
+            await deleteDoc(d.ref);
+            showToast(`Secure connection with ${req.to} confirmed!`, 'success');
+          }
+        } catch (err) {
+          console.error('[HANDSHAKE] Sequential auth failed:', err);
+        }
+      }
+    });
+  }, [user]);
+
   // ── MESSAGE LISTENER — KEY FIX ────────────────────────────────────────────
   useEffect(() => {
     if (!activeChat || !user || !chatId) return;
@@ -479,7 +514,17 @@ export default function ChatsPanel({
       const existingReqs = await getDocs(q);
       if (!existingReqs.empty) { setAddError('Authorization request already pending'); return; }
 
-      await addDoc(collections.chatRequests, { from: user.qc, to: targetQC, status: 'pending', timestamp: serverTimestamp() });
+      const targetUid = accountSnap.data().uid;
+      const myUid = user.uid || (await getDoc(doc(collections.accounts, user.qc))).data().uid;
+
+      await addDoc(collections.chatRequests, { 
+        from: user.qc, 
+        to: targetQC, 
+        fromUid: myUid,
+        toUid: targetUid,
+        status: 'pending', 
+        timestamp: serverTimestamp() 
+      });
       setNewContactQC('');
       setIsAddingContact(false);
       showToast('Authorization request broadcasted.', 'info');

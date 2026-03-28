@@ -62,19 +62,17 @@ export default function NotificationsPanel({ user, onClose, showToast }) {
 
       console.log('[AUTH] Public keys fetched, establishing channel...');
 
-      // 1. Add to current user's contacts
+      // 1. Add THE REQUESTER to CURRENT USER'S contacts
       await setDoc(doc(collections.contacts(user.qc), request.from), {
         qc: request.from,
         publicKeyJwk: fromPubKey || null,
         addedAt: serverTimestamp()
       });
 
-      // 2. Add current user to sender's contacts
-      await setDoc(doc(collections.contacts(request.from), user.qc), {
-        qc: user.qc,
-        publicKeyJwk: toPubKey || null,
-        addedAt: serverTimestamp()
-      });
+      // NOTE: We no longer try to write to the requester's contacts here (Step 2).
+      // That cross-write is blocked by strict security rules. 
+      // The requester will now add US to their own contacts via a listener in ChatsPanel.
+
 
       console.log('[AUTH] Contacts established, updating request status...');
 
