@@ -1,158 +1,97 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // ─── HELPER FUNCTIONS ──────────────────────────────────────────────────
-
-    // Validates that a string looks like a QC number
-    function isValidQC(qc) {
-      return qc is string && qc.matches('QC-[0-9]{10}');
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
     }
 
-    // Validates that a base64 string is present (non-empty)
-    function isNonEmpty(val) {
-      return val is string && val.size() > 0;
-    }
-
-    // ─── ACCOUNTS ─────────────────────────────────────────────────────────
-    // Public key (publicKeyJwk) is intentionally readable — it's a public key.
-    // The private key is stored AES-encrypted (encryptedPrivateKey) and is
-    // useless without the user's 10-digit key + pattern.
-    match /accounts/{qcNumber} {
-      // Anyone can read an account to fetch the public key for ECDH derivation
+    // Accounts: 
+    // - Anyone can read (needed for public key lookup)
+    // - Only owner can update (uid stored in doc from Fix 2)
+    // - Anyone can create (must be auth-ed, but we don't have uid yet in the write)
+    match /accounts/{qc} {
       allow read: if true;
-
-      // Allow create only if required fields are present and well-formed
-      allow create: if isValidQC(qcNumber)
-        && request.resource.data.keys().hasAll([
-          'qc', 'keyHash', 'ptype', 'pvalHash', 'publicKeyJwk', 'encryptedPrivateKey'
-        ])
-        && request.resource.data.qc == qcNumber
-        && isNonEmpty(request.resource.data.keyHash)
-        && isNonEmpty(request.resource.data.encryptedPrivateKey)
-        && request.resource.data.publicKeyJwk is map;
-
-      // Allow update only for specific safe fields (profile data, not auth fields)
-      // Auth fields (keyHash, pvalHash, publicKeyJwk, encryptedPrivateKey) cannot
-      // be changed from the client — they'd need to go through a Cloud Function.
-      allow update: if isValidQC(qcNumber)
-        && !request.resource.data.diff(resource.data).affectedKeys()
-            .hasAny(['keyHash', 'pvalHash', 'publicKeyJwk', 'encryptedPrivateKey', 'qc']);
-
-      // Deletion is handled server-side only via Cloud Functions
-      allow delete: if false;
+      allow create: if isAuthenticated();
+      // Allow update if you are the owner (UID match) 
+      // OR if it's a legacy account (no UID) and you are claiming it (adding your UID)
+      allow update: if isOwner(resource.data.uid) || (
+        !resource.data.uid && request.resource.data.uid == request.auth.uid
+      );
+      
+      // Contacts: Only the owner (the account holder) can read/write their contacts
+      match /contacts/{contactSide} {
+        allow read, write: if isOwner(get(/databases/$(database)/documents/accounts/$(qc)).data.uid);
+      }
     }
 
-    // ─── CONTACTS (subcollection) ──────────────────────────────────────────
-    match /accounts/{qcNumber}/contacts/{contactQc} {
-      // Contacts are readable by anyone (QC numbers are semi-public)
-      allow read: if true;
-
-      // Only allow writes that are well-formed contact records
-      allow create: if isValidQC(contactQc)
-        && request.resource.data.keys().hasAll(['qc', 'addedAt'])
-        && request.resource.data.qc == contactQc
-        && (!('publicKeyJwk' in request.resource.data) || request.resource.data.publicKeyJwk is map || request.resource.data.publicKeyJwk == null);
-
-      // Allow updates to contact metadata (nickname, autoDelete) only
-      allow update: if isValidQC(contactQc)
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['qc']);
-
-      allow delete: if true;
-    }
-
-    // ─── ACTIVE / BURNED NUMBERS ───────────────────────────────────────────
-    match /active_numbers/{qcNumber} {
-      allow read: if true;
-      allow write: if isValidQC(qcNumber); // Still client-side — ideally move to Cloud Functions
-    }
-
-    match /burned_numbers/{qcNumber} {
-      allow read: if true;
-      allow write: if false; // Server-side only (Cloud Function eraseQuantCIdentity)
-    }
-
-    // ─── MESSAGES ─────────────────────────────────────────────────────────
-    // Note: messages are AES-256-GCM encrypted client-side with ECDH shared keys.
-    // Even with open read access, the ciphertext is unreadable without the private key.
-    // TODO: For stronger guarantees, add Firebase Auth and validate request.auth.uid
-    //       matches the message sender's registered UID.
-    // Collection group rule for unread counts (all msgs subcollections)
-    match /{path=**}/msgs/{msgId} {
-      allow read: if true; // Ciphertext is encrypted, so open read for counts is safe
-      allow delete: if true;
-    }
-
-    match /messages/{chatId}/msgs/{msgId} {
-      allow read: if true;
-
-      // Allow create only if the message has valid structure
-      allow create: if request.resource.data.keys().hasAll([
-          'from', 'to', 'ciphertext', 'timestamp', 'seenBySender', 'seenByRecipient'
-        ])
-        && isValidQC(request.resource.data.from)
-        && isValidQC(request.resource.data.to)
-        && isNonEmpty(request.resource.data.ciphertext)
-        && request.resource.data.from != request.resource.data.to;
-
-      // Allow update only for read-receipt fields
-      allow update: if request.resource.data.diff(resource.data).affectedKeys()
-        .hasOnly(['seenBySender', 'seenByRecipient']);
-
-      // Anyone in the chat can delete messages (for auto-delete / EAS)
-      allow delete: if true;
-    }
-
-    // ─── CHAT REQUESTS ────────────────────────────────────────────────────
+    // Chat Requests: 
+    // - Must be authenticated to see requests or send them
+    // - Support for both new (UID-based) and legacy (QC-based) requests
     match /chat_requests/{requestId} {
-      allow read: if true;
-
-      allow create: if request.resource.data.keys().hasAll(['from', 'to', 'status', 'timestamp'])
-        && isValidQC(request.resource.data.from)
-        && isValidQC(request.resource.data.to)
-        && request.resource.data.status == 'pending'
-        && request.resource.data.from != request.resource.data.to;
-
-      // Allow status updates to accepted/rejected only
-      allow update: if request.resource.data.diff(resource.data).affectedKeys()
-        .hasOnly(['status', 'respondedAt'])
-        && request.resource.data.status in ['accepted', 'rejected'];
-
-      allow delete: if false;
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.from != request.resource.data.to;
+      
+      // Allow update if:
+      // A) Proper UID match (New format)
+      // B) Authentication present (Legacy format fallback for transition)
+      allow update: if isAuthenticated() && (
+        request.auth.uid == (resource.data.fromUid || "legacy") || 
+        request.auth.uid == (resource.data.toUid || "legacy") ||
+        (!resource.data.fromUid && !resource.data.toUid) // Allow legacy updates
+      );
+      
+      // Allow delete if you are the sender (to clean up after handshake)
+      allow delete: if isAuthenticated() && (
+        request.auth.uid == (resource.data.fromUid || "legacy") ||
+        (!resource.data.fromUid && !resource.data.toUid) // Allow legacy delete
+      );
     }
 
-    // ─── STATUSES ─────────────────────────────────────────────────────────
-    match /statuses/{statusId} {
-      allow read: if true;
-
-      allow create: if request.resource.data.keys().hasAll(['qc', 'text', 'createdAt', 'expiresAt'])
-        && isValidQC(request.resource.data.qc)
-        && request.resource.data.text is string
-        && request.resource.data.text.size() <= 300;
-
-      // Allow soft-delete (setting deleted: true) and view count updates
-      allow update: if request.resource.data.diff(resource.data).affectedKeys()
-        .hasOnly(['deleted', 'viewCount', 'reactions']);
-
-      allow delete: if false; // Hard deletes via Cloud Function expireStatuses only
+    // Messages: (RESTORED — Accidentally deleted in previous step)
+    // - Scoped to /messages/{chatId}/msgs/{msgId}
+    // - Must be authenticated to read/write
+    match /messages/{chatId}/msgs/{msgId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() 
+                    && request.resource.data.from != request.resource.data.to;
+      allow update: if isAuthenticated() 
+                    && (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenByRecipient', 'deliveredByRecipient']));
+      allow delete: if isAuthenticated();
     }
 
-    // ─── GROUPS ───────────────────────────────────────────────────────────
     match /groups/{groupId} {
-      allow read: if true;
-      allow write: if false; // Pending implementation
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
+      
+      match /msgs/{msgId} {
+        allow read, write: if isAuthenticated();
+      }
     }
 
-    match /groups/{groupId}/msgs/{msgId} {
-      allow read: if true;
-      allow write: if false; // Pending implementation
+    match /statuses/{id} {
+      allow read, write: if isAuthenticated();
     }
 
-    // ─── ERASURE LOG ──────────────────────────────────────────────────────
-    // Write-only from Cloud Functions, never readable by clients
-    match /erasure_log/{logId} {
-      allow read: if false;
-      allow write: if false;
+    match /active_numbers/{id} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    match /burned_numbers/{id} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    match /erasure_log/{id} {
+      allow read, write: if false; // Server-side only
     }
   }
 }
