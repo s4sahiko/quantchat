@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { Shield, Key, Grid, Loader2, AlertCircle } from 'lucide-react';
 import ChessBoard from './shared/ChessBoard';
-import { collections, getDoc, doc } from '../firebase/firestore';
+import { collections, getDoc, doc, updateDoc } from '../firebase/firestore';
 import bcrypt from 'bcryptjs';
 import { decryptPrivateKey, importPrivateKey } from '../utils/encryption';
 import { anonSignIn } from '../firebase/auth';
@@ -84,6 +84,19 @@ export default function Login({ onComplete, onNavigate, showToast }) {
       // 5. Sign in anonymously to establish a Firebase Auth session.
       const authUser = await anonSignIn();
 
+      // ✅ MIGRATION FIX: If the account document doesn't have a UID yet, save it now.
+      // This allows legacy accounts to work with the new "owner-only" rules.
+      if (!accountData.uid) {
+        console.log('[MIGRATION] Saving UID to legacy account document...');
+        try {
+          // Use updateDoc (instead of setDoc) to only touch the UID field
+          await updateDoc(doc(collections.accounts, qcNumber), { uid: authUser.uid });
+        } catch (mErr) {
+          console.error('[MIGRATION] Failed to update UID. Rules might be blocking it:', mErr);
+          // If the update fails, we proceed, but security rules might block future writes.
+        }
+      }
+
       // 6. Complete authentication
       onComplete({
         qc: qcNumber,
@@ -91,7 +104,7 @@ export default function Login({ onComplete, onNavigate, showToast }) {
         privateKey: privateCryptoKey,     // CryptoKey — in memory only
         privateKeyJwk,                    // JWK — kept briefly for sessionStorage backup
         publicKeyJwk: accountData.publicKeyJwk,
-        data: accountData,
+        data: { ...accountData, uid: authUser.uid },
       });
 
     } catch (err) {
