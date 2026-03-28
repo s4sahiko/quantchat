@@ -142,7 +142,7 @@ export default function Login({ onComplete, onNavigate, showToast }) {
             <input
               type="password"
               required
-              maxLength={10}
+              maxLength={64}
               value={encryptionKey}
               onChange={(e) => setEncryptionKey(e.target.value)}
               placeholder="Your encryption key"
