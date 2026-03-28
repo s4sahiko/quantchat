@@ -82,12 +82,12 @@ export default function Login({ onComplete, onNavigate, showToast }) {
       const privateCryptoKey = await importPrivateKey(privateKeyJwk);
 
       // 5. Sign in anonymously to establish a Firebase Auth session.
-      //    This JWT satisfies RTDB and Firestore write rules.
-      await anonSignIn();
+      const authUser = await anonSignIn();
 
       // 6. Complete authentication
       onComplete({
         qc: qcNumber,
+        uid: authUser.uid, // ✅ CRITICAL: needed for firestore rules
         privateKey: privateCryptoKey,     // CryptoKey — in memory only
         privateKeyJwk,                    // JWK — kept briefly for sessionStorage backup
         publicKeyJwk: accountData.publicKeyJwk,

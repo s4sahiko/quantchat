@@ -83,10 +83,11 @@ export default function CreateIdentity({ onNavigate, onComplete, showToast }) {
       setIssuedQC(qc);
       setPendingAuth({
         qc,
+        uid: anonUser.uid, // ✅ CRITICAL: needed for firestore rules
         privateKey: privateCryptoKey,  // CryptoKey — for ECDH in ChatsPanel
         privateKeyJwk,                 // JWK — stripped by handleAuthComplete before persist
         publicKeyJwk,
-        data: { ptype: patternType, autoDelete: 'OFF', notes: [], blocked: [], encryptedPrivateKey }
+        data: { ptype: patternType, autoDelete: 'OFF', notes: [], blocked: [], encryptedPrivateKey, uid: anonUser.uid }
       });
       setStep(4);
 

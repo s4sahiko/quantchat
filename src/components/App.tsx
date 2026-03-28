@@ -12,6 +12,7 @@ import { initScreenshotPrevention } from '../utils/screenshotBlock';
 import { saveSessionKey, restoreSessionKey, clearSessionKey } from '../utils/sessionKeyStore';
 import { Shield, User, MessageSquare, Globe, LogOut, Bell, ShieldAlert } from 'lucide-react';
 import { collections, onSnapshot, query, where, handleFirestoreError, OperationType, collectionGroup, db } from '../firebase/firestore';
+import { auth, onAuthStateChanged } from '../firebase/auth';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
@@ -96,6 +97,16 @@ export default function App() {
       });
       return cleanup;
     }
+  }, [user]);
+
+  // Auth sync: keep the UID in sync with the React state
+  useEffect(() => {
+    return onAuthStateChanged(auth, (authUser) => {
+      if (authUser && user && user.qc && !user.uid) {
+        console.log('[AUTH] Syncing UID to user state:', authUser.uid);
+        setUser(prev => ({ ...prev, uid: authUser.uid }));
+      }
+    });
   }, [user]);
 
   // Handle hardware/browser back button
