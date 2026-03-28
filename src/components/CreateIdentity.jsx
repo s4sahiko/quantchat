@@ -4,9 +4,11 @@ import { Shield, Key, Grid, CheckCircle, Copy, Loader2, ChevronLeft } from 'luci
 import ChessBoard from './shared/ChessBoard';
 import bcrypt from 'bcryptjs';
 import { collections, setDoc, doc, serverTimestamp } from '../firebase/firestore';
+import { anonSignIn } from '../firebase/auth';
 import {
   generateKeyPair,
   encryptPrivateKey,
+  importPrivateKey,
 } from '../utils/encryption';
 
 /**
@@ -25,6 +27,7 @@ export default function CreateIdentity({ onNavigate, onComplete, showToast }) {
   const [chessMoves, setChessMoves] = useState([]);
   const [loading, setLoading] = useState(false);
   const [issuedQC, setIssuedQC] = useState(null);
+  const [pendingAuth, setPendingAuth] = useState(null);
   const [error, setError] = useState('');
 
   const handleIssue = async () => {
@@ -45,17 +48,22 @@ export default function CreateIdentity({ onNavigate, onComplete, showToast }) {
       const privateKeyPassword = encryptionKey + pval;
       const encryptedPrivateKey = await encryptPrivateKey(privateKeyJwk, privateKeyPassword);
 
-      // 4. Generate a unique QC number
+      // 4. Sign in anonymously to get a Firebase Auth token.
+      //    uid is stored in the account doc — Firestore rules use this for owner verification.
+      const anonUser = await anonSignIn();
+
+      // 5. Generate a unique QC number
       const randomNum = Math.floor(1000000000 + Math.random() * 9000000000);
       const qc = `QC-${randomNum}`;
 
-      // 5. Store in Firestore:
+      // 6. Store in Firestore:
       //    - publicKeyJwk: safe to store openly (ECDH public keys are meant to be shared)
       //    - encryptedPrivateKey: AES-256-GCM encrypted blob; useless without the password
       //    - keyHash / pvalHash: bcrypt hashes for login verification only
       //    The RAW private key JWK is NEVER sent to Firestore
       await setDoc(doc(collections.accounts, qc), {
         qc,
+        uid: anonUser.uid,   // Firebase Auth uid — used by Firestore rules for owner-only updates
         keyHash,
         pvalHash,
         ptype: patternType,
@@ -67,22 +75,30 @@ export default function CreateIdentity({ onNavigate, onComplete, showToast }) {
         blocked: [],
       });
 
+      // 6. Import the private key into a CryptoKey (in memory only, never persisted).
+      //    This matches what Login.jsx provides, so handleAuthComplete correctly
+      //    sets user.privateKey as a CryptoKey for ECDH operations.
+      const privateCryptoKey = await importPrivateKey(privateKeyJwk);
+
       setIssuedQC(qc);
+      setPendingAuth({
+        qc,
+        privateKey: privateCryptoKey,  // CryptoKey — for ECDH in ChatsPanel
+        privateKeyJwk,                 // JWK — stripped by handleAuthComplete before persist
+        publicKeyJwk,
+        data: { ptype: patternType, autoDelete: 'OFF', notes: [], blocked: [], encryptedPrivateKey }
+      });
       setStep(4);
 
-      // 6. Auto-login: import private key into memory and call onComplete
-      //    We pass the raw private key JWK to the parent ONLY in memory,
-      //    never persisted to localStorage
-      onComplete({
-        qc,
-        privateKeyJwk,      // held in React state only
-        publicKeyJwk,
-        data: { ptype: patternType, autoDelete: 'OFF', notes: [], blocked: [] }
-      });
-
     } catch (err) {
-      console.error(err);
-      setError('Failed to initialize identity. Try again.');
+      console.error('Identity Creation Error:', err);
+      if (err.message?.includes('auth/operation-not-allowed')) {
+        setError('Anonymous Auth is not enabled in Firebase Console.');
+      } else if (err.message?.includes('permission-denied')) {
+        setError('Firestore permission denied. Please deploy rules.');
+      } else {
+        setError('Failed to initialize identity: ' + (err.message || 'Unknown error'));
+      }
     } finally {
       setLoading(false);
     }
@@ -90,8 +106,8 @@ export default function CreateIdentity({ onNavigate, onComplete, showToast }) {
 
   const nextStep = () => {
     if (step === 1) {
-      if (encryptionKey.length !== 10 || !/^\d+$/.test(encryptionKey)) {
-        setError('Key must be exactly 10 digits.');
+      if (encryptionKey.length < 12) {
+        setError('Key must be at least 12 characters.');
         return;
       }
     }
@@ -132,17 +148,27 @@ export default function CreateIdentity({ onNavigate, onComplete, showToast }) {
                 <h2 className="text-lg md:text-xl font-display">Step 1: Encryption Key</h2>
               </div>
               <p className="text-muted text-[11px] md:text-sm mb-4 md:mb-6 font-mono leading-relaxed">
-                Enter a 10-digit numeric key. This is used to <strong className="text-cyan">encrypt your private
-                key</strong> and is NEVER stored in plaintext. Losing it means permanent account loss.
+                Enter a strong key (min 12 characters). Mix letters, numbers, and symbols for
+                maximum strength. This <strong className="text-cyan">encrypts your private key</strong> and
+                is NEVER stored. Losing it means permanent account loss.
               </p>
               <input
                 type="password"
-                maxLength={10}
+                maxLength={64}
                 value={encryptionKey}
-                onChange={(e) => setEncryptionKey(e.target.value.replace(/\D/g, ''))}
-                placeholder="0000000000"
-                className="w-full text-center text-xl md:text-2xl tracking-[0.4em] md:tracking-[0.5em] mb-4"
+                onChange={(e) => setEncryptionKey(e.target.value)}
+                placeholder="e.g. Tr0ub4dor&3_ghost"
+                className="w-full text-center text-base md:text-lg tracking-widest mb-2"
               />
+              <p className={`text-[9px] font-mono mb-4 ${
+                encryptionKey.length === 0 ? 'text-muted' :
+                encryptionKey.length < 12 ? 'text-red' :
+                encryptionKey.length < 20 ? 'text-yellow-400' : 'text-green'
+              }`}>
+                {encryptionKey.length === 0 ? 'Minimum 12 characters' :
+                 encryptionKey.length < 12 ? `Too short — ${12 - encryptionKey.length} more chars needed` :
+                 encryptionKey.length < 20 ? 'Acceptable — longer is stronger' : 'Strong key ✓'}
+              </p>
               {error && <p className="text-red text-[10px] md:text-xs mb-4 font-mono">{error}</p>}
               <button
                 onClick={nextStep}
@@ -229,6 +255,8 @@ export default function CreateIdentity({ onNavigate, onComplete, showToast }) {
                 </p>
               </div>
 
+              {error && <p className="text-red text-[11px] md:text-sm mb-6 font-mono bg-red/5 p-2 border border-red/20">{error}</p>}
+
               {loading ? (
                 <div className="flex flex-col items-center gap-3 md:gap-4 py-6 md:py-8">
                   <Loader2 className="text-cyan animate-spin" size={28} />
@@ -289,7 +317,7 @@ export default function CreateIdentity({ onNavigate, onComplete, showToast }) {
               </div>
               
               <button
-                onClick={() => onNavigate('chat')}
+                onClick={() => onComplete(pendingAuth)}
                 className="w-full py-3 md:py-4 bg-cyan text-bg font-display text-base md:text-lg hover:bg-cyan/80 transition-all font-bold"
               >
                 ENTER NETWORK

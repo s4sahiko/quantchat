@@ -9,10 +9,10 @@ import NotificationsPanel from './panels/NotificationsPanel';
 import Watermark from './shared/Watermark';
 import ErrorBoundary from './shared/ErrorBoundary';
 import { initScreenshotPrevention } from '../utils/screenshotBlock';
+import { saveSessionKey, restoreSessionKey, clearSessionKey } from '../utils/sessionKeyStore';
 import { Shield, User, MessageSquare, Globe, LogOut, Bell, ShieldAlert } from 'lucide-react';
 import { collections, onSnapshot, query, where, handleFirestoreError, OperationType, collectionGroup, db } from '../firebase/firestore';
 import { motion, AnimatePresence } from 'motion/react';
-import { importPrivateKey } from '../utils/encryption';
 
 export default function App() {
   const [view, setView] = useState('landing'); // landing | create | login | main
@@ -68,32 +68,25 @@ export default function App() {
     }
   }, [user]);
 
+  // Session restore: unwrap the persisted private key from IndexedDB + localStorage.
   useEffect(() => {
-    const saved = localStorage.getItem('qc_session');
-    const jwkSaved = sessionStorage.getItem('qc_priv_jwk');
-    
-    if (saved && jwkSaved) {
-      try {
-        const parsed = JSON.parse(saved);
-        const jwk = JSON.parse(jwkSaved);
-        
-        // Wrap in async to re-import private key
-        const restore = async () => {
-          try {
-            const privateKey = await importPrivateKey(jwk);
-            setUser({ ...parsed, privateKey, privateKeyJwk: jwk });
-            setView('main');
-          } catch (err) {
-            console.error('Session restoration failed:', err);
-            handleLogout();
-          }
-        };
-        restore();
-      } catch (e) {
-        handleLogout();
+    (async () => {
+      const savedSession = localStorage.getItem('qc_session');
+      if (!savedSession) return;
+
+      const sessionData = JSON.parse(savedSession);
+      const privateKey = await restoreSessionKey();
+
+      if (privateKey) {
+        // Both halves present — restore the full user object with live CryptoKey
+        setUser({ ...sessionData, privateKey });
+        setView('main');
+      } else {
+        // Wrapping key missing (e.g. cleared IndexedDB) — require re-login
+        localStorage.removeItem('qc_session');
       }
-    }
-  }, []);
+    })();
+  }, []); // runs once on mount
 
   useEffect(() => {
     if (user) {
@@ -215,22 +208,29 @@ export default function App() {
   }, [showNotifications]);
 
   const handleAuthComplete = (userData) => {
-    // 1. Store the sensitive JWK in sessionStorage only (backup for refresh)
-    if (userData.privateKeyJwk) {
-      sessionStorage.setItem('qc_priv_jwk', JSON.stringify(userData.privateKeyJwk));
+    const { privateKey, privateKeyJwk, ...persistData } = userData;
+
+    // 1. Persist session metadata (no raw keys) in localStorage
+    localStorage.setItem('qc_session', JSON.stringify(persistData));
+
+    // 2. Wrap and persist the private CryptoKey for session restore.
+    //    saveSessionKey stores the wrapping key in IndexedDB (non-extractable CryptoKey)
+    //    and the AES-GCM wrapped blob in localStorage. Neither half alone is useful.
+    if (privateKey && privateKeyJwk) {
+      saveSessionKey(privateKey, privateKeyJwk).catch((err) => {
+        console.warn('Could not persist session key:', err);
+      });
     }
 
-    // 2. Persist only the metadata in localStorage
-    const { privateKey, privateKeyJwk, ...persistData } = userData;
-    setUser(userData);
-    localStorage.setItem('qc_session', JSON.stringify(persistData));
+    // 3. Set user with live CryptoKey in React state
+    setUser({ ...persistData, privateKey });
     setView('main');
   };
 
   const handleLogout = () => {
     setUser(null);
     localStorage.removeItem('qc_session');
-    sessionStorage.removeItem('qc_priv_jwk');
+    clearSessionKey(); // wipes wrapping key from IndexedDB + wrapped blob from localStorage
     setView('landing');
   };
 
@@ -424,7 +424,7 @@ export default function App() {
         </AnimatePresence>
 
         <footer className="hidden md:flex h-6 bg-bg3 border-t border-border items-center justify-between px-4 text-[8px] font-mono text-muted/50 uppercase tracking-widest z-50">
-          <div>AES-256-GCM ENCRYPTION ACTIVE</div>
+          <div>ECDH P-256 + AES-256-GCM ACTIVE</div>
           <div>QUANT NETWORK STATUS: OPTIMAL</div>
           <div>GHOST MODE: ENABLED</div>
         </footer>

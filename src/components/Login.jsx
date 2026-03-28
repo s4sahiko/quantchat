@@ -5,6 +5,7 @@ import ChessBoard from './shared/ChessBoard';
 import { collections, getDoc, doc } from '../firebase/firestore';
 import bcrypt from 'bcryptjs';
 import { decryptPrivateKey, importPrivateKey } from '../utils/encryption';
+import { anonSignIn } from '../firebase/auth';
 
 /**
  * FIXES APPLIED:
@@ -78,10 +79,13 @@ export default function Login({ onComplete, onNavigate, showToast }) {
       }
 
       // 4. Import the private key into a non-extractable CryptoKey
-      //    From this point, the raw JWK is discarded. Only the CryptoKey lives in memory.
       const privateCryptoKey = await importPrivateKey(privateKeyJwk);
 
-      // 5. Complete authentication — pass private key in memory, NOT the raw string
+      // 5. Sign in anonymously to establish a Firebase Auth session.
+      //    This JWT satisfies RTDB and Firestore write rules.
+      await anonSignIn();
+
+      // 6. Complete authentication
       onComplete({
         qc: qcNumber,
         privateKey: privateCryptoKey,     // CryptoKey — in memory only
@@ -127,8 +131,8 @@ export default function Login({ onComplete, onNavigate, showToast }) {
               required
               maxLength={10}
               value={encryptionKey}
-              onChange={(e) => setEncryptionKey(e.target.value.replace(/\D/g, ''))}
-              placeholder="••••••••••"
+              onChange={(e) => setEncryptionKey(e.target.value)}
+              placeholder="Your encryption key"
               className="w-full text-center tracking-[0.4em] md:tracking-[0.5em] text-sm md:text-base"
             />
           </div>

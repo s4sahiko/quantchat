@@ -1,17 +1,29 @@
 {
   "rules": {
-    ".read": true,
-    ".write": true,
+    ".read": false,
+    ".write": false,
     "typing": {
       "$chatId": {
-        ".read": true,
-        ".write": true
+        ".read": "auth != null",
+        ".write": "auth != null"
       }
     },
     "vanish": {
       "$chatId": {
-        ".read": true,
-        ".write": true
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+    "vanishState": {
+      "$chatId": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+    "presence": {
+      "$qcNumber": {
+        ".read": "auth != null",
+        ".write": "auth != null"
       }
     }
   }
